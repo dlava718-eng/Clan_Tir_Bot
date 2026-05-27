@@ -3,7 +3,6 @@ import sys
 import sqlite3
 import threading
 import asyncio
-import signal
 from datetime import datetime
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,6 +11,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8882364637:AAHUWNZilUdxotSOXg44owGgCsuozHGlT48")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 5611887050))
+COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", 7))
 DATABASE_FILE = "/data/applications.db"
 
 # Проверка переменных
@@ -34,9 +34,6 @@ user_data_temp = {}
 
 # Flask приложение
 flask_app = Flask(__name__)
-
-# Глобальная переменная для приложения бота
-telegram_app = None
 
 # ========== БАЗА ДАННЫХ ==========
 def init_database():
@@ -116,6 +113,23 @@ def get_application_by_id(app_id):
         }
     return None
 
+def get_user_last_application(user_id):
+    apps = get_all_applications()
+    for app in apps:
+        if app["user_id"] == user_id:
+            return app
+    return None
+
+def get_statistics():
+    apps = get_all_applications()
+    total = len(apps)
+    pending = len([a for a in apps if a["status"] == "pending"])
+    accepted = len([a for a in apps if a["status"] == "accepted"])
+    rejected = len([a for a in apps if a["status"] == "rejected"])
+    tir = len([a for a in apps if a["clan_choice"] == "Tir"])
+    academia = len([a for a in apps if a["clan_choice"] == "Academia"])
+    return total, pending, accepted, rejected, tir, academia
+
 def update_status(app_id, new_status):
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
@@ -130,34 +144,152 @@ def delete_app(app_id):
     conn.commit()
     conn.close()
 
-# ========== ОБРАБОТЧИКИ БОТА ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_data_temp.pop(user_id, None)
-    
+# ========== ГЛАВНОЕ МЕНЮ ==========
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message=None):
     keyboard = [
         [InlineKeyboardButton("⚔️ Вступить в Tir", callback_data="join_tir")],
         [InlineKeyboardButton("📚 Вступить в Academia", callback_data="join_academia")],
+        [InlineKeyboardButton("🌟 О нас", callback_data="about_us")],
+        [InlineKeyboardButton("🔄 Разница между Tir и Academia", callback_data="difference")],
         [InlineKeyboardButton("👑 Админ-панель", callback_data="admin_panel")]
     ]
-    await update.message.reply_text(
-        "🏰 Добро пожаловать в клан Tir!\n\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    menu_text = "🏰 *Добро пожаловать в клан Tir!* 🏰\n\nВыберите действие из меню ниже:"
+    
+    if message:
+        await message.edit_text(menu_text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data_temp.pop(user_id, None)
+    await main_menu(update, context)
+
+# ========== ИНФОРМАЦИОННЫЕ КНОПКИ ==========
+async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    about_text = """
+🏰 **О клане Tir** 🏰
+
+*Мы не просто клан — мы братство воинов, объединённых одной целью: стать легендой!*
+
+⚡ **Наш путь** ⚡
+Мы прошли через огонь и воду, через сотни битв и тысячи побед. Tir — это не название, это клеймо на сердце каждого из нас.
+
+🎯 **Наша философия** 🎯
+— Сила в единстве
+— Честь выше победы
+— Дисциплина ведёт к величию
+— Помощь ближнему — закон
+
+💪 **Что мы даём игрокам** 💪
+• Профессиональное развитие от опытных игроков
+• Участие в топовых ивентах и рейдах
+• Дружное комьюнити без токсичности
+• Поддержку 24/7 в любых начинаниях
+
+🔥 **Наши достижения** 🔥
+Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 500 совместных побед
+
+*Стань частью истории. Стань частью TIR!* 🐉
+"""
+    keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
+    await query.edit_message_text(about_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    diff_text = """
+🔄 **Разница между Tir и Academia** 🔄
+
+⚔️ **TIR — ОСНОВНОЙ КЛАН** ⚔️
+
+*Элитное подразделение, кузница чемпионов*
+
+• Ядро клана, состоящее из опытных ветеранов
+• Участие в топовых рейдах и PvP-сражениях
+• Стратегическое планирование и управление
+• Наставничество над академией
+• Более высокие требования к уровню и навыкам
+• Основные ресурсы клана
+
+---
+
+📚 **ACADEMIA — КУЗНИЦА КАДРОВ** 📚
+
+*Школа будущих чемпионов*
+
+• Подготовка новых игроков к основному составу
+• Обучение механикам и тактикам
+• Помощь в развитии и прокачке
+• Более мягкие требования к уровню
+• Ресурсная база для основного клана
+
+---
+
+🔄 **ВЗАИМОДЕЙСТВИЕ** 🔄
+
+🤝 **Как они работают вместе:**
+
+• Tir помогает Academia развиваться: передаёт опыт, проводит обучение, защищает на ивентах
+• Academia снабжает Tir ресурсами: собирает материалы, выполняет вспомогательные задачи, готовит новобранцев
+
+🎯 **Путь развития:** Academia → Обучение → Повышение навыков → Вступление в Tir
+
+*Вместе мы создаём идеальную клановую экосистему!* 💪
+"""
+    keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
+    await query.edit_message_text(diff_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ========== АНКЕТА ==========
+async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    last_app = get_user_last_application(user_id)
+    if last_app and last_app["status"] in ["pending", "accepted"]:
+        keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
+        await query.edit_message_text(
+            "⏰ Вы уже подавали заявку!\n\nСтатус вашей заявки можно проверить командой /myapp",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    user_data_temp[user_id] = {"clan": "Tir", "step": ASK_DESCRIPTION}
+    await query.edit_message_text(
+        "⚔️ *Ты выбрал клан Tir!* ⚔️\n\n"
+        "📝 *Напиши ОПИСАНИЕ о себе:*\n"
+        "(Кратко расскажи, кто ты, чем занимаешься в игре)",
+        parse_mode="Markdown"
     )
 
-async def join_tir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    user_data_temp[user_id] = {"clan": "Tir", "step": ASK_DESCRIPTION}
-    await query.edit_message_text("⚔️ Клан Tir\n\n📝 Напишите ОПИСАНИЕ о себе:")
-
-async def join_academia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
+    
+    last_app = get_user_last_application(user_id)
+    if last_app and last_app["status"] in ["pending", "accepted"]:
+        keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
+        await query.edit_message_text(
+            "⏰ Вы уже подавали заявку!\n\nСтатус вашей заявки можно проверить командой /myapp",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
     user_data_temp[user_id] = {"clan": "Academia", "step": ASK_DESCRIPTION}
-    await query.edit_message_text("📚 Клан Academia\n\n📝 Напишите ОПИСАНИЕ о себе:")
+    await query.edit_message_text(
+        "📚 *Ты выбрал Academia!* 📚\n\n"
+        "📝 *Напиши ОПИСАНИЕ о себе:*\n"
+        "(Кто ты, какой у тебя опыт, чего хочешь достичь)",
+        parse_mode="Markdown"
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -171,34 +303,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == ASK_DESCRIPTION:
         user_data_temp[user_id]["description"] = text
         user_data_temp[user_id]["step"] = ASK_LEVEL
-        await update.message.reply_text("✨ Введите УРОВЕНЬ (только число):")
+        await update.message.reply_text("✨ *Введите УРОВЕНЬ персонажа:*\n(Только число)", parse_mode="Markdown")
     
     elif step == ASK_LEVEL:
         if not text.isdigit():
-            await update.message.reply_text("❌ Введите число:")
+            await update.message.reply_text("❌ Пожалуйста, введите число (уровень):")
             return
         user_data_temp[user_id]["level"] = int(text)
         user_data_temp[user_id]["step"] = ASK_NAME
-        await update.message.reply_text("🎮 Введите ИМЯ в игре:")
+        await update.message.reply_text("🎮 *Как ваше ИМЯ в игре?*", parse_mode="Markdown")
     
     elif step == ASK_NAME:
         user_data_temp[user_id]["name"] = text
         user_data_temp[user_id]["step"] = ASK_SKILLS
-        await update.message.reply_text("⚔️ Опишите НАВЫКИ:")
+        await update.message.reply_text("⚔️ *Опишите свои НАВЫКИ:*\n(Класс, роль в команде)", parse_mode="Markdown")
     
     elif step == ASK_SKILLS:
         user_data_temp[user_id]["skills"] = text
         user_data_temp[user_id]["step"] = ASK_TIMEZONE
-        await update.message.reply_text("🌍 Ваш ЧАСОВОЙ ПОЯС:")
+        await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС:*\n(Например: UTC+3, Москва)", parse_mode="Markdown")
     
     elif step == ASK_TIMEZONE:
         user_data_temp[user_id]["timezone"] = text
         user_data_temp[user_id]["step"] = ASK_AGE
-        await update.message.reply_text("🎂 Сколько вам ЛЕТ?")
+        await update.message.reply_text("🎂 *Сколько вам ЛЕТ?*", parse_mode="Markdown")
     
     elif step == ASK_AGE:
         if not text.isdigit():
-            await update.message.reply_text("❌ Введите число:")
+            await update.message.reply_text("❌ Пожалуйста, введите число (возраст):")
             return
         
         user_data_temp[user_id]["age"] = int(text)
@@ -221,13 +353,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         del user_data_temp[user_id]
         
-        keyboard = [[InlineKeyboardButton("◀️ Меню", callback_data="back_to_menu")]]
+        keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
         await update.message.reply_text(
-            f"✅ Заявка #{app_id} отправлена!\n\nОжидайте ответа.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"✅ *Заявка #{app_id} отправлена!*\n\n"
+            "Ожидайте ответа лидера или зама.\n"
+            "Спасибо, что выбрали наш клан! 🙌\n\n"
+            "Статус заявки можно проверить командой /myapp",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
         )
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    last_app = get_user_last_application(user_id)
+    
+    if last_app is None:
+        await update.message.reply_text(
+            "📭 *У вас нет отправленных заявок.*\n\n"
+            "Нажмите /start и выберите 'Вступить в Tir' или 'Вступить в Academia'",
+            parse_mode="Markdown"
+        )
+        return
+    
+    status_emoji = {"pending": "⏳", "accepted": "✅", "rejected": "❌"}.get(last_app["status"], "❓")
+    status_text = {"pending": "Ожидает рассмотрения", "accepted": "✅ ПРИНЯТА!", "rejected": "❌ ОТКЛОНЕНА"}.get(last_app["status"], "Неизвестно")
+    
+    message = f"""
+{status_emoji} *Статус вашей заявки*
+
+📋 *Заявка #{last_app['id']}*
+🏰 Клан: {last_app['clan_choice']}
+📅 Дата: {last_app['timestamp']}
+📊 Статус: {status_text}
+
+📝 *Ваши данные:*
+• Описание: {last_app['answers']['описание']}
+• Уровень: {last_app['answers']['уровень']}
+• Имя в игре: {last_app['answers']['имя']}
+• Навыки: {last_app['answers']['навыки']}
+• Часовой пояс: {last_app['answers']['часовой пояс']}
+• Возраст: {last_app['answers']['возраст']}
+"""
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+# ========== АДМИН-ПАНЕЛЬ ==========
+async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -235,13 +405,49 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ Доступ запрещён!")
         return
     
+    total, pending, accepted, rejected, tir, academia = get_statistics()
+    
+    admin_text = f"""
+👑 *Админ-панель клана Tir* 👑
+
+📊 *Статистика:*
+• Всего заявок: {total}
+• Ожидают рассмотрения: {pending}
+• ✅ Подтверждённые: {accepted}
+• ❌ Отклонённые: {rejected}
+• ⚔️ В Tir: {tir} | 📚 В Academia: {academia}
+
+Выберите действие:
+"""
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Список всех заявок", callback_data="admin_view_all")],
+        [InlineKeyboardButton("⏳ Только новые (ожидают)", callback_data="admin_view_pending")],
+        [InlineKeyboardButton("✅ Подтверждённые", callback_data="admin_view_accepted")],
+        [InlineKeyboardButton("❌ Отклонённые", callback_data="admin_view_rejected")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def admin_view_applications(update: Update, context: ContextTypes.DEFAULT_TYPE, status_filter=None):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != ADMIN_ID:
+        return
+    
     apps = get_all_applications()
+    if status_filter:
+        apps = [app for app in apps if app["status"] == status_filter]
+    
     if not apps:
-        await query.edit_message_text("📭 Нет заявок.")
+        await query.edit_message_text("📭 Нет заявок.", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")
+        ]]))
         return
     
     app = apps[0]
-    text = f"""📋 ЗАЯВКА #{app['id']}
+    text = f"""📋 *Заявка #{app['id']}*
 
 👤 @{app['username']}
 🏰 {app['clan_choice']}
@@ -259,9 +465,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Принять", callback_data=f"accept_{app['id']}"),
          InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app['id']}")],
         [InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{app['id']}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")]
     ]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -280,32 +486,20 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if action == "accept":
         update_status(app_id, "accepted")
-        await context.bot.send_message(chat_id=app["user_id"], text="✅ Ваша заявка ПРИНЯТА!")
+        await context.bot.send_message(chat_id=app["user_id"], text="✅ Ваша заявка принята! Добро пожаловать в клан!")
         await query.edit_message_text(f"✅ Заявка #{app_id} принята!")
     elif action == "reject":
         update_status(app_id, "rejected")
-        await context.bot.send_message(chat_id=app["user_id"], text="❌ Ваша заявка ОТКЛОНЕНА")
+        await context.bot.send_message(chat_id=app["user_id"], text="❌ Ваша заявка отклонена. Вы можете подать новую через 7 дней.")
         await query.edit_message_text(f"❌ Заявка #{app_id} отклонена!")
     elif action == "delete":
         delete_app(app_id)
         await query.edit_message_text(f"🗑️ Заявка #{app_id} удалена!")
 
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
-    user_data_temp.pop(user_id, None)
-    
-    keyboard = [
-        [InlineKeyboardButton("⚔️ Вступить в Tir", callback_data="join_tir")],
-        [InlineKeyboardButton("📚 Вступить в Academia", callback_data="join_academia")],
-        [InlineKeyboardButton("👑 Админ-панель", callback_data="admin_panel")]
-    ]
-    await query.edit_message_text(
-        "🏰 Добро пожаловать в клан Tir!\n\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await main_menu(update, context, message=query.message)
 
 # ========== FLASK ==========
 @flask_app.route('/')
@@ -317,9 +511,8 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-# ========== ЗАПУСК ==========
+# ========== ЗАПУСК БОТА ==========
 def run_bot():
-    """Запускает бота в отдельном потоке с собственным event loop"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -331,22 +524,36 @@ def run_bot():
         
         telegram_app = Application.builder().token(BOT_TOKEN).build()
         
+        # Команды
         telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CallbackQueryHandler(join_tir, pattern="^join_tir$"))
-        telegram_app.add_handler(CallbackQueryHandler(join_academia, pattern="^join_academia$"))
-        telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+        telegram_app.add_handler(CommandHandler("myapp", my_application))
+        
+        # Callback-обработчики меню
+        telegram_app.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
+        telegram_app.add_handler(CallbackQueryHandler(join_academia_callback, pattern="^join_academia$"))
+        telegram_app.add_handler(CallbackQueryHandler(about_us_callback, pattern="^about_us$"))
+        telegram_app.add_handler(CallbackQueryHandler(difference_callback, pattern="^difference$"))
+        telegram_app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
+        telegram_app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+        
+        # Админские просмотры
+        telegram_app.add_handler(CallbackQueryHandler(lambda u,c: admin_view_applications(u,c, None), pattern="^admin_view_all$"))
+        telegram_app.add_handler(CallbackQueryHandler(lambda u,c: admin_view_applications(u,c, "pending"), pattern="^admin_view_pending$"))
+        telegram_app.add_handler(CallbackQueryHandler(lambda u,c: admin_view_applications(u,c, "accepted"), pattern="^admin_view_accepted$"))
+        telegram_app.add_handler(CallbackQueryHandler(lambda u,c: admin_view_applications(u,c, "rejected"), pattern="^admin_view_rejected$"))
+        
+        # Действия с заявками
         telegram_app.add_handler(CallbackQueryHandler(handle_action, pattern="^(accept|reject|delete)_"))
-        telegram_app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
+        
+        # Обработка сообщений
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print(f"✅ Бот запущен! Админ: {ADMIN_ID}")
         
-        # Запускаем polling
         await telegram_app.initialize()
         await telegram_app.start()
         await telegram_app.updater.start_polling()
         
-        # Держим бота запущенным
         while True:
             await asyncio.sleep(1)
     
@@ -358,10 +565,12 @@ def run_bot():
         loop.close()
 
 if __name__ == "__main__":
+    telegram_app = None
+    
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    print("✅ Flask запущен")
+    print("✅ Flask запущен на порту", os.environ.get("PORT", 10000))
     
-    # Запускаем бота в основном потоке
+    # Запускаем бота
     run_bot()
