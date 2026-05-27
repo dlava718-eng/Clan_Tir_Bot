@@ -3,16 +3,26 @@ import sys
 import sqlite3
 import re
 import threading
+import asyncio
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8882364637:AAHUWNZilUdxotSOXg44owGgCsuozHGlT48")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 5611887050))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", 7))
 DATABASE_FILE = "applications.db"
+
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    print("❌ ОШИБКА: BOT_TOKEN не задан в переменных окружения!")
+    sys.exit(1)
+
+if not ADMIN_ID:
+    print("❌ ОШИБКА: ADMIN_ID не задан в переменных окружения!")
+    sys.exit(1)
 
 # Состояния анкеты
 ASK_DESCRIPTION, ASK_LEVEL, ASK_NAME, ASK_SKILLS, ASK_TIMEZONE, ASK_AGE = range(6)
@@ -27,183 +37,214 @@ flask_app = Flask(__name__)
 # ========== РАБОТА С БАЗОЙ ДАННЫХ SQLITE ==========
 def init_database():
     """Инициализация базы данных и создание таблиц"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS applications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            clan_choice TEXT NOT NULL,
-            description TEXT,
-            level INTEGER,
-            ingame_name TEXT,
-            skills TEXT,
-            timezone TEXT,
-            age INTEGER,
-            timestamp TEXT NOT NULL,
-            status TEXT DEFAULT 'pending'
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print("✅ База данных SQLite инициализирована")
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                clan_choice TEXT NOT NULL,
+                description TEXT,
+                level INTEGER,
+                ingame_name TEXT,
+                skills TEXT,
+                timezone TEXT,
+                age INTEGER,
+                timestamp TEXT NOT NULL,
+                status TEXT DEFAULT 'pending'
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print("✅ База данных SQLite инициализирована")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка инициализации БД: {e}")
+        return False
 
 def save_application(user_id, username, clan_choice, answers):
     """Сохраняет заявку в базу данных"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT INTO applications 
-        (user_id, username, clan_choice, description, level, ingame_name, skills, timezone, age, timestamp, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        user_id,
-        username,
-        clan_choice,
-        answers['описание'],
-        answers['уровень'],
-        answers['имя'],
-        answers['навыки'],
-        answers['часовой пояс'],
-        answers['возраст'],
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'pending'
-    ))
-    
-    app_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return app_id
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO applications 
+            (user_id, username, clan_choice, description, level, ingame_name, skills, timezone, age, timestamp, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            user_id,
+            username,
+            clan_choice,
+            answers['описание'],
+            answers['уровень'],
+            answers['имя'],
+            answers['навыки'],
+            answers['часовой пояс'],
+            answers['возраст'],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'pending'
+        ))
+        
+        app_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return app_id
+    except Exception as e:
+        print(f"❌ Ошибка сохранения заявки: {e}")
+        return None
 
 def load_applications(status_filter=None):
     """Загружает заявки из базы данных с фильтром по статусу"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    if status_filter:
-        cursor.execute('''
-            SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
-                   skills, timezone, age, timestamp, status
-            FROM applications WHERE status = ? ORDER BY id DESC
-        ''', (status_filter,))
-    else:
-        cursor.execute('''
-            SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
-                   skills, timezone, age, timestamp, status
-            FROM applications ORDER BY id DESC
-        ''')
-    
-    rows = cursor.fetchall()
-    conn.close()
-    
-    apps = []
-    for row in rows:
-        apps.append({
-            "id": row[0],
-            "user_id": row[1],
-            "username": row[2],
-            "clan_choice": row[3],
-            "answers": {
-                "описание": row[4],
-                "уровень": row[5],
-                "имя": row[6],
-                "навыки": row[7],
-                "часовой пояс": row[8],
-                "возраст": row[9]
-            },
-            "timestamp": row[10],
-            "status": row[11]
-        })
-    
-    return apps
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        if status_filter:
+            cursor.execute('''
+                SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
+                       skills, timezone, age, timestamp, status
+                FROM applications WHERE status = ? ORDER BY id DESC
+            ''', (status_filter,))
+        else:
+            cursor.execute('''
+                SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
+                       skills, timezone, age, timestamp, status
+                FROM applications ORDER BY id DESC
+            ''')
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        apps = []
+        for row in rows:
+            apps.append({
+                "id": row[0],
+                "user_id": row[1],
+                "username": row[2],
+                "clan_choice": row[3],
+                "answers": {
+                    "описание": row[4],
+                    "уровень": row[5],
+                    "имя": row[6],
+                    "навыки": row[7],
+                    "часовой пояс": row[8],
+                    "возраст": row[9]
+                },
+                "timestamp": row[10],
+                "status": row[11]
+            })
+        
+        return apps
+    except Exception as e:
+        print(f"❌ Ошибка загрузки заявок: {e}")
+        return []
 
 def get_application_by_id(app_id):
     """Получает заявку по ID"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
-               skills, timezone, age, timestamp, status
-        FROM applications WHERE id = ?
-    ''', (app_id,))
-    
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        return {
-            "id": row[0],
-            "user_id": row[1],
-            "username": row[2],
-            "clan_choice": row[3],
-            "answers": {
-                "описание": row[4],
-                "уровень": row[5],
-                "имя": row[6],
-                "навыки": row[7],
-                "часовой пояс": row[8],
-                "возраст": row[9]
-            },
-            "timestamp": row[10],
-            "status": row[11]
-        }
-    return None
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
+                   skills, timezone, age, timestamp, status
+            FROM applications WHERE id = ?
+        ''', (app_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "id": row[0],
+                "user_id": row[1],
+                "username": row[2],
+                "clan_choice": row[3],
+                "answers": {
+                    "описание": row[4],
+                    "уровень": row[5],
+                    "имя": row[6],
+                    "навыки": row[7],
+                    "часовой пояс": row[8],
+                    "возраст": row[9]
+                },
+                "timestamp": row[10],
+                "status": row[11]
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения заявки: {e}")
+        return None
 
 def update_application_status(app_id, new_status):
     """Обновляет статус заявки"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE applications SET status = ? WHERE id = ?', (new_status, app_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE applications SET status = ? WHERE id = ?', (new_status, app_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка обновления статуса: {e}")
+        return False
 
 def delete_application(app_id):
     """Удаляет заявку из базы данных"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM applications WHERE id = ?', (app_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM applications WHERE id = ?', (app_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка удаления заявки: {e}")
+        return False
 
 def get_user_last_application(user_id):
     """Возвращает последнюю заявку пользователя и дату"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
-               skills, timezone, age, timestamp, status
-        FROM applications WHERE user_id = ? ORDER BY id DESC LIMIT 1
-    ''', (user_id,))
-    
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        app = {
-            "id": row[0],
-            "user_id": row[1],
-            "username": row[2],
-            "clan_choice": row[3],
-            "answers": {
-                "описание": row[4],
-                "уровень": row[5],
-                "имя": row[6],
-                "навыки": row[7],
-                "часовой пояс": row[8],
-                "возраст": row[9]
-            },
-            "timestamp": row[10],
-            "status": row[11]
-        }
-        last_date = datetime.strptime(app["timestamp"], "%Y-%m-%d %H:%M:%S")
-        return app, last_date
-    return None, None
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, user_id, username, clan_choice, description, level, ingame_name, 
+                   skills, timezone, age, timestamp, status
+            FROM applications WHERE user_id = ? ORDER BY id DESC LIMIT 1
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            app = {
+                "id": row[0],
+                "user_id": row[1],
+                "username": row[2],
+                "clan_choice": row[3],
+                "answers": {
+                    "описание": row[4],
+                    "уровень": row[5],
+                    "имя": row[6],
+                    "навыки": row[7],
+                    "часовой пояс": row[8],
+                    "возраст": row[9]
+                },
+                "timestamp": row[10],
+                "status": row[11]
+            }
+            last_date = datetime.strptime(app["timestamp"], "%Y-%m-%d %H:%M:%S")
+            return app, last_date
+        return None, None
+    except Exception as e:
+        print(f"❌ Ошибка получения последней заявки: {e}")
+        return None, None
 
 def can_submit_application(user_id):
     """Проверяет, может ли пользователь подать новую заявку"""
@@ -222,37 +263,48 @@ def can_submit_application(user_id):
 
 def get_statistics():
     """Получает статистику по заявкам"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM applications')
-    total = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "pending"')
-    pending = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "accepted"')
-    accepted = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "rejected"')
-    rejected = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE clan_choice = "Tir"')
-    tir_count = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE clan_choice = "Academia"')
-    academia_count = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    return {
-        "total": total,
-        "pending": pending,
-        "accepted": accepted,
-        "rejected": rejected,
-        "tir": tir_count,
-        "academia": academia_count
-    }
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM applications')
+        total = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "pending"')
+        pending = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "accepted"')
+        accepted = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "rejected"')
+        rejected = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM applications WHERE clan_choice = "Tir"')
+        tir_count = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM applications WHERE clan_choice = "Academia"')
+        academia_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            "total": total,
+            "pending": pending,
+            "accepted": accepted,
+            "rejected": rejected,
+            "tir": tir_count,
+            "academia": academia_count
+        }
+    except Exception as e:
+        print(f"❌ Ошибка получения статистики: {e}")
+        return {
+            "total": 0,
+            "pending": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "tir": 0,
+            "academia": 0
+        }
 
 # ========== ФУНКЦИЯ ДЛЯ ЭКРАНИРОВАНИЯ MARKDOWN ==========
 def escape_markdown(text):
@@ -277,7 +329,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message=
         try:
             await message.edit_text(menu_text, reply_markup=reply_markup, parse_mode="Markdown")
         except:
-            await message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="Markdown")
+            await message.reply_text(menu_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -353,12 +405,12 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     about_text = """
 🏰 **О клане Tir** 🏰
 
-*Мы не просто клан — мы братство воинов, объединённых одной целью: стать легендой!*
+*Мы не просто клан — мы братство воинов, объединённых одной целью: стать легендой\!*
 
 ⚡ **Наш путь** ⚡
 Мы прошли через огонь и воду, через сотни битв и тысячи побед. Tir — это не название, это клеймо на сердце каждого из нас.
 
-🎯 **Наша принципы** 🎯
+🎯 **Наша философия** 🎯
 — Сила в единстве
 — Честь выше победы
 — Дисциплина ведёт к величию
@@ -371,9 +423,9 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Поддержку 24/7 в любых начинаниях
 
 🔥 **Наши достижения** 🔥
-Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 50 совместных рейдов
+Топ\-10 кланов по PvP | 3\-кратные победители клановых турниров | Более 500 совместных побед
 
-*Стань частью истории. Стань частью TIR!* 🐉
+*Стань частью истории. Стань частью TIR\!* 🐉
 """
     keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -381,7 +433,7 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await query.edit_message_text(about_text, reply_markup=reply_markup, parse_mode="Markdown")
     except:
-        await query.message.reply_text(about_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await query.message.reply_text(about_text, reply_markup=reply_markup)
 
 async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -403,7 +455,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 ---
 
-📚 **ACADEMIA — НОВОБРАНЦЫ** 📚
+📚 **ACADEMIA — КУЗНИЦА КАДРОВ** 📚
 
 *Школа будущих чемпионов*
 
@@ -424,7 +476,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 🎯 **Путь развития:** Academia → Обучение → Повышение навыков → Вступление в Tir
 
-*Вместе мы создаём идеальную клановую экосистему!* 💪
+*Вместе мы создаём идеальную клановую экосистему\!* 💪
 """
     keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -432,7 +484,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await query.edit_message_text(diff_text, reply_markup=reply_markup, parse_mode="Markdown")
     except:
-        await query.message.reply_text(diff_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await query.message.reply_text(diff_text, reply_markup=reply_markup)
 
 # ========== НАЧАЛО АНКЕТЫ ==========
 async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -446,36 +498,17 @@ async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not can_submit:
         keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.edit_message_text(
-                f"⏰ *Вы не можете подать заявку так часто!*\n\n"
-                f"Ваша предыдущая заявка ещё рассматривается или была отклонена.\n\n"
-                f"📅 *Следующую заявку можно подать через {days_left} дн.*\n\n"
-                f"Чтобы узнать статус заявки, отправьте команду /myapp",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-        except:
-            await query.message.reply_text(
-                f"⏰ Вы не можете подать заявку так часто!\n\nСледующая попытка через {days_left} дн.",
-                reply_markup=reply_markup
-            )
+        await query.edit_message_text(
+            f"⏰ Вы не можете подать заявку так часто!\n\nСледующая попытка через {days_left} дн.",
+            reply_markup=reply_markup
+        )
         return
     
     user_data_temp[user_id] = {"clan": "Tir", "step": ASK_DESCRIPTION}
     
-    try:
-        await query.edit_message_text(
-            "⚔️ *Ты выбрал клан Tir!* ⚔️\n\n"
-            "Это путь сильнейших. Расскажи о себе подробнее.\n\n"
-            "📝 *Напиши ОПИСАНИЕ о себе:*\n"
-            "(Кратко расскажи, кто ты, чем занимаешься в игре, какой у тебя опыт)",
-            parse_mode="Markdown"
-        )
-    except:
-        await query.message.reply_text(
-            "⚔️ Ты выбрал клан Tir!\n\n📝 Напиши ОПИСАНИЕ о себе:"
-        )
+    await query.edit_message_text(
+        "⚔️ Ты выбрал клан Tir!\n\n📝 Напиши ОПИСАНИЕ о себе:\n(Кратко расскажи, кто ты, чем занимаешься в игре)"
+    )
 
 async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -488,36 +521,17 @@ async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_T
     if not can_submit:
         keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.edit_message_text(
-                f"⏰ *Вы не можете подать заявку так часто!*\n\n"
-                f"Ваша предыдущая заявка ещё рассматривается или была отклонена.\n\n"
-                f"📅 *Следующую заявку можно подать через {days_left} дн.*\n\n"
-                f"Чтобы узнать статус заявки, отправьте команду /myapp",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-        except:
-            await query.message.reply_text(
-                f"⏰ Вы не можете подать заявку так часто!\n\nСледующая попытка через {days_left} дн.",
-                reply_markup=reply_markup
-            )
+        await query.edit_message_text(
+            f"⏰ Вы не можете подать заявку так часто!\n\nСледующая попытка через {days_left} дн.",
+            reply_markup=reply_markup
+        )
         return
     
     user_data_temp[user_id] = {"clan": "Academia", "step": ASK_DESCRIPTION}
     
-    try:
-        await query.edit_message_text(
-            "📚 *Ты выбрал Academia!* 📚\n\n"
-            "Это старт твоего пути к величию. Расскажи о себе.\n\n"
-            "📝 *Напиши ОПИСАНИЕ о себе:*\n"
-            "(Кто ты, какой у тебя опыт, чего хочешь достичь)",
-            parse_mode="Markdown"
-        )
-    except:
-        await query.message.reply_text(
-            "📚 Ты выбрал Academia!\n\n📝 Напиши ОПИСАНИЕ о себе:"
-        )
+    await query.edit_message_text(
+        "📚 Ты выбрал Academia!\n\n📝 Напиши ОПИСАНИЕ о себе:\n(Кто ты, какой у тебя опыт, чего хочешь достичь)"
+    )
 
 # ========== ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ ==========
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -530,7 +544,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == ASK_DESCRIPTION:
             user_data_temp[user_id]["description"] = text
             user_data_temp[user_id]["step"] = ASK_LEVEL
-            await update.message.reply_text("✨ *Введите УРОВЕНЬ персонажа:*\n(Только число)", parse_mode="Markdown")
+            await update.message.reply_text("✨ Введите УРОВЕНЬ персонажа:\n(Только число)")
         
         elif step == ASK_LEVEL:
             if not text.isdigit():
@@ -538,22 +552,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             user_data_temp[user_id]["level"] = int(text)
             user_data_temp[user_id]["step"] = ASK_NAME
-            await update.message.reply_text("🎮 *Как ваше ИМЯ в игре?*", parse_mode="Markdown")
+            await update.message.reply_text("🎮 Как ваше ИМЯ в игре?")
         
         elif step == ASK_NAME:
             user_data_temp[user_id]["name"] = text
             user_data_temp[user_id]["step"] = ASK_SKILLS
-            await update.message.reply_text("⚔️ *Опишите свои НАВЫКИ:*\n(Класс, роль в команде, что умеете)", parse_mode="Markdown")
+            await update.message.reply_text("⚔️ Опишите свои НАВЫКИ:\n(Класс, роль в команде, что умеете)")
         
         elif step == ASK_SKILLS:
             user_data_temp[user_id]["skills"] = text
             user_data_temp[user_id]["step"] = ASK_TIMEZONE
-            await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС:*\n(Например: UTC+3, Москва)", parse_mode="Markdown")
+            await update.message.reply_text("🌍 Ваш ЧАСОВОЙ ПОЯС:\n(Например: UTC+3, Москва)")
         
         elif step == ASK_TIMEZONE:
             user_data_temp[user_id]["timezone"] = text
             user_data_temp[user_id]["step"] = ASK_AGE
-            await update.message.reply_text("🎂 *Сколько вам ЛЕТ?*", parse_mode="Markdown")
+            await update.message.reply_text("🎂 Сколько вам ЛЕТ?")
         
         elif step == ASK_AGE:
             if not text.isdigit():
@@ -584,12 +598,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"✅ *Заявка #{app_id} отправлена!*\n\n"
+                f"✅ Заявка #{app_id} отправлена!\n\n"
                 "Ожидайте ответа лидера или зама.\n"
                 "Спасибо, что выбрали наш клан! 🙌\n\n"
                 "Статус заявки можно проверить командой /myapp",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
+                reply_markup=reply_markup
             )
         
         return
@@ -605,21 +618,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text=f"📨 *Сообщение от лидеров клана Tir:*\n\n{text}",
-                parse_mode="Markdown"
+                text=f"📨 Сообщение от лидеров клана Tir:\n\n{text}"
             )
             
             await update.message.reply_text(
-                f"✅ *Сообщение отправлено!*\n\n"
-                f"Пользователь: @{escape_markdown(username)}\n"
-                f"ID заявки: #{app_id}",
-                parse_mode="Markdown"
+                f"✅ Сообщение отправлено!\n\nПользователь: @{username}\nID заявки: #{app_id}"
             )
             
             del admin_reply_temp[user_id]
             
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка при отправке: {escape_markdown(str(e))}")
+            await update.message.reply_text(f"❌ Ошибка при отправке: {str(e)}")
         
         return
 
@@ -633,27 +642,20 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if user_id != ADMIN_ID:
         keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.edit_message_text(
-                "⛔ *Доступ запрещён!*\n\nЭта панель доступна только лидерам и замам клана Tir.",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-        except:
-            await query.message.reply_text("⛔ Доступ запрещён!")
+        await query.edit_message_text("⛔ Доступ запрещён!", reply_markup=reply_markup)
         return
     
     stats = get_statistics()
     
     admin_text = (
-        "👑 *Админ-панель клана Tir* 👑\n\n"
-        f"📊 *Статистика:*\n"
-        f"• Всего заявок: `{stats['total']}`\n"
-        f"• Ожидают рассмотрения: `{stats['pending']}`\n"
-        f"• Подтверждённые: `{stats['accepted']}`\n"
-        f"• Отклонённые: `{stats['rejected']}`\n"
-        f"• В Tir: `{stats['tir']}` | В Academia: `{stats['academia']}`\n"
-        f"• КД между заявками: `{COOLDOWN_DAYS} дн.`\n\n"
+        "👑 АДМИН-ПАНЕЛЬ КЛАНА TIR 👑\n\n"
+        f"📊 СТАТИСТИКА:\n"
+        f"• Всего заявок: {stats['total']}\n"
+        f"• Ожидают рассмотрения: {stats['pending']}\n"
+        f"• Подтверждённые: {stats['accepted']}\n"
+        f"• Отклонённые: {stats['rejected']}\n"
+        f"• В Tir: {stats['tir']} | В Academia: {stats['academia']}\n"
+        f"• КД между заявками: {COOLDOWN_DAYS} дн.\n\n"
         "Выберите действие:"
     )
     
@@ -668,10 +670,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    try:
-        await query.edit_message_text(admin_text, reply_markup=reply_markup, parse_mode="Markdown")
-    except:
-        await query.message.reply_text(admin_text, reply_markup=reply_markup)
+    await query.edit_message_text(admin_text, reply_markup=reply_markup)
 
 # ========== ФУНКЦИИ УДАЛЕНИЯ ЗАЯВОК ==========
 async def admin_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -862,10 +861,7 @@ async def admin_view_applications(update: Update, context: ContextTypes.DEFAULT_
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    try:
-        await query.edit_message_text(message_text, reply_markup=reply_markup)
-    except:
-        await query.message.reply_text(message_text, reply_markup=reply_markup)
+    await query.edit_message_text(message_text, reply_markup=reply_markup)
 
 async def admin_change_page(update: Update, context: ContextTypes.DEFAULT_TYPE, direction):
     query = update.callback_query
@@ -899,13 +895,13 @@ async def admin_handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     status_text = "принята" if action == "accept" else "отклонена"
     
     try:
-        user_message = f"{status_emoji} *Ваша заявка в клан {escape_markdown(app['clan_choice'])} была {status_text}!*\n\n"
+        user_message = f"{status_emoji} Ваша заявка в клан {app['clan_choice']} была {status_text}!\n\n"
         if action == "accept":
             user_message += "🎉 Поздравляем! Лидер свяжется с вами для дальнейших инструкций.\n\nДобро пожаловать в семью Tir! 💪"
         else:
             user_message += f"😔 К сожалению, мы не можем принять вас сейчас.\n\nНовую заявку можно подать через {COOLDOWN_DAYS} дней."
         
-        await context.bot.send_message(chat_id=app["user_id"], text=user_message, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=app["user_id"], text=user_message)
         await query.edit_message_text(
             f"{status_emoji} Заявка #{app_id} {status_text}!\nПользователю отправлено уведомление.",
             reply_markup=InlineKeyboardMarkup([[
@@ -1021,7 +1017,7 @@ async def run_bot():
     application.add_handler(CommandHandler("myapp", my_application))
     application.add_handler(CommandHandler("cancel", cancel_command))
     
-    # Callback-обработчики главного меню
+    # Callback-обработчики
     application.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
     application.add_handler(CallbackQueryHandler(join_academia_callback, pattern="^join_academia$"))
     application.add_handler(CallbackQueryHandler(about_us_callback, pattern="^about_us$"))
@@ -1039,11 +1035,11 @@ async def run_bot():
     application.add_handler(CallbackQueryHandler(lambda u,c: admin_change_page(u,c, "next"), pattern="^admin_next_page$"))
     application.add_handler(CallbackQueryHandler(lambda u,c: admin_change_page(u,c, "prev"), pattern="^admin_prev_page$"))
     
-    # Принятие/отклонение заявок
+    # Принятие/отклонение
     application.add_handler(CallbackQueryHandler(lambda u,c: admin_handle_action(u,c, int(c.matches[0].group(1)), "accept"), pattern=r"^admin_accept_(\d+)$"))
     application.add_handler(CallbackQueryHandler(lambda u,c: admin_handle_action(u,c, int(c.matches[0].group(1)), "reject"), pattern=r"^admin_reject_(\d+)$"))
     
-    # Удаление заявок
+    # Удаление
     application.add_handler(CallbackQueryHandler(admin_delete_menu, pattern="^admin_delete_menu$"))
     application.add_handler(CallbackQueryHandler(admin_delete_confirm, pattern=r"^admin_delete_confirm_(\d+)$"))
     application.add_handler(CallbackQueryHandler(admin_delete_execute, pattern=r"^admin_delete_execute_(\d+)$"))
@@ -1083,16 +1079,19 @@ def run_flask():
 
 # ========== ОСНОВНОЙ ЗАПУСК ==========
 if __name__ == "__main__":
-    import asyncio
+    print("🚀 Запуск приложения...")
     
     # Инициализируем базу данных
-    init_database()
+    if not init_database():
+        print("❌ Критическая ошибка: не удалось инициализировать базу данных")
+        sys.exit(1)
     
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-    print("✅ Flask сервер запущен на порту", os.environ.get("PORT", 5000))
+    print(f"✅ Flask сервер запущен на порту {os.environ.get('PORT', 5000)}")
     
     # Запускаем бота
+    print("🔄 Запуск Telegram бота...")
     asyncio.run(run_bot())
