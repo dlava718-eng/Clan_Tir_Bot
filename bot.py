@@ -1,6 +1,9 @@
 import sqlite3
 import re
 from datetime import datetime, timedelta
+import os
+import threading
+from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -1103,5 +1106,30 @@ def main():
     app.run_polling()
 
 
+# Создаём Flask-приложение для healthcheck
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/health')
+def health():
+    return jsonify({"status": "ok", "message": "Bot is running"}), 200
+
+def run_flask():
+    """Запускает Flask-сервер для Render healthcheck"""
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+def run_bot():
+    """Запускает Telegram бота"""
+    # Ваша существующая функция main()
+    application = Application.builder().token(BOT_TOKEN).build()
+    # ... добавьте все обработчики как у вас в коде
+    application.run_polling()
+
 if __name__ == "__main__":
-    main()
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+    
+    # Запускаем бота в основном потоке
+    run_bot()
