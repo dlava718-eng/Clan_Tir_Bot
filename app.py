@@ -172,7 +172,7 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⚡ **Наш путь** ⚡
 Мы прошли через огонь и воду, через сотни битв и тысячи побед. Tir — это не название, это клеймо на сердце каждого из нас.
 
-🎯 **Наша философия** 🎯
+🎯 **Наша принципы** 🎯
 — Сила в единстве
 — Честь выше победы
 — Дисциплина ведёт к величию
@@ -185,7 +185,7 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Поддержку 24/7 в любых начинаниях
 
 🔥 **Наши достижения** 🔥
-Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 500 совместных побед
+Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 50 совместных рейдов
 
 *Стань частью истории. Стань частью TIR!* 🐉
 """
@@ -205,7 +205,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 • Наставничество над академией
 • Более высокие требования к уровню и навыкам
 
-📚 **ACADEMIA — КУЗНИЦА КАДРОВ** 📚
+📚 **ACADEMIA — НОВОБРАНЦЫ** 📚
 • Подготовка новых игроков к основному составу
 • Обучение механикам и тактикам
 • Помощь в развитии и прокачке
@@ -293,7 +293,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif step == ASK_SKILLS:
         user_data_temp[user_id]["skills"] = text
         user_data_temp[user_id]["step"] = ASK_TIMEZONE
-        await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС:*", parse_mode="Markdown")
+        await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС (UTC +0):*", parse_mode="Markdown")
     
     elif step == ASK_TIMEZONE:
         user_data_temp[user_id]["timezone"] = text
