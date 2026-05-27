@@ -25,8 +25,14 @@ if not ADMIN_ID:
 print(f"✅ Токен: {BOT_TOKEN[:10]}...")
 print(f"✅ ADMIN_ID: {ADMIN_ID}")
 
+# Состояния анкеты
 ASK_DESCRIPTION, ASK_LEVEL, ASK_NAME, ASK_SKILLS, ASK_TIMEZONE, ASK_AGE = range(6)
+
+# Хранилища временных данных
 user_data_temp = {}
+admin_reply_temp = {}
+
+# Flask приложение
 flask_app = Flask(__name__)
 
 # ========== БАЗА ДАННЫХ ==========
@@ -267,6 +273,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text.strip()
     
+    # Проверяем режим отправки сообщения админом
+    if user_id in admin_reply_temp:
+        target_data = admin_reply_temp[user_id]
+        target_user_id = target_data["target_user_id"]
+        app_id = target_data["app_id"]
+        
+        app = get_application_by_id(app_id)
+        username = app["username"] if app else "пользователь"
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"📨 *Сообщение от лидеров клана Tir:*\n\n{text}",
+                parse_mode="Markdown"
+            )
+            
+            await update.message.reply_text(
+                f"✅ *Сообщение отправлено!*\n\nПользователь: @{username}\nID заявки: #{app_id}",
+                parse_mode="Markdown"
+            )
+            
+            del admin_reply_temp[user_id]
+            
+            keyboard = [[InlineKeyboardButton("◀️ Вернуться в админ-панель", callback_data="admin_panel")]]
+            await update.message.reply_text("Вернуться в админ-панель?", reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        return
+    
+    # Проверяем режим анкеты
     if user_id not in user_data_temp:
         return
     
@@ -293,7 +330,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif step == ASK_SKILLS:
         user_data_temp[user_id]["skills"] = text
         user_data_temp[user_id]["step"] = ASK_TIMEZONE
-        await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС (UTC +0):*", parse_mode="Markdown")
+        await update.message.reply_text("🌍 *Ваш ЧАСОВОЙ ПОЯС:*", parse_mode="Markdown")
     
     elif step == ASK_TIMEZONE:
         user_data_temp[user_id]["timezone"] = text
@@ -394,7 +431,8 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("⏳ Новые (ожидают)", callback_data="admin_view_pending")],
         [InlineKeyboardButton("✅ Принятые", callback_data="admin_view_accepted")],
         [InlineKeyboardButton("❌ Отклонённые", callback_data="admin_view_rejected")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton("💬 Написать пользователю", callback_data="admin_write_user")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -486,7 +524,8 @@ async def show_application(update: Update, context: ContextTypes.DEFAULT_TYPE, q
         InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{app['id']}")
     ])
     keyboard.append([
-        InlineKeyboardButton("🗑️ Удалить", callback_data=f"admin_delete_{app['id']}")
+        InlineKeyboardButton("🗑️ Удалить", callback_data=f"admin_delete_{app['id']}"),
+        InlineKeyboardButton("💬 Написать", callback_data=f"admin_reply_to_{app['user_id']}_{app['id']}")
     ])
     keyboard.append([
         InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")
@@ -561,10 +600,88 @@ async def admin_handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await show_application(update, context, query)
 
+# ========== ОТПРАВКА СООБЩЕНИЙ ПОЛЬЗОВАТЕЛЯМ ==========
+async def admin_write_user_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список пользователей для отправки сообщения"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != ADMIN_ID:
+        return
+    
+    apps = get_all_applications()
+    if not apps:
+        await query.edit_message_text(
+            "📭 Нет пользователей для связи.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")
+            ]])
+        )
+        return
+    
+    keyboard = []
+    for app in apps[:15]:
+        status_emoji = "⏳" if app["status"] == "pending" else "✅" if app["status"] == "accepted" else "❌"
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{status_emoji} @{app['username']} (заявка #{app['id']})",
+                callback_data=f"admin_reply_to_{app['user_id']}_{app['id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton("◀️ Назад в админ-панель", callback_data="admin_panel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "💬 *Выберите пользователя для отправки сообщения:*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+async def admin_start_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начинает процесс отправки сообщения пользователю"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != ADMIN_ID:
+        return
+    
+    parts = query.data.split("_")
+    target_user_id = int(parts[3])
+    app_id = int(parts[4])
+    
+    admin_reply_temp[query.from_user.id] = {
+        "target_user_id": target_user_id,
+        "app_id": app_id
+    }
+    
+    await query.edit_message_text(
+        "💬 *Режим отправки сообщения*\n\n"
+        "Напишите сообщение, которое хотите отправить пользователю.\n\n"
+        "Сообщение придёт ОТ ИМЕНИ БОТА.\n\n"
+        "❌ Для отмены напишите /cancel",
+        parse_mode="Markdown"
+    )
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await main_menu(update, context, message=query.message)
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in admin_reply_temp:
+        del admin_reply_temp[user_id]
+        await update.message.reply_text("❌ Режим отправки сообщения отменён.")
+    elif user_id in user_data_temp:
+        del user_data_temp[user_id]
+        await update.message.reply_text("❌ Анкета отменена.")
+    else:
+        await update.message.reply_text("Нет активных действий для отмены.")
+    
+    keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]]
+    await update.message.reply_text("Вернуться в меню?", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ========== FLASK ==========
 @flask_app.route('/')
@@ -576,7 +693,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-# ========== ЗАПУСК ==========
+# ========== ЗАПУСК БОТА ==========
 def run_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -590,6 +707,7 @@ def run_bot():
         # Команды
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("myapp", my_application))
+        telegram_app.add_handler(CommandHandler("cancel", cancel_command))
         
         # Главное меню
         telegram_app.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
@@ -607,6 +725,10 @@ def run_bot():
         
         # Действия с заявками
         telegram_app.add_handler(CallbackQueryHandler(admin_handle_action, pattern=r"^admin_(accept|reject|delete)_\d+$"))
+        
+        # Отправка сообщений пользователям
+        telegram_app.add_handler(CallbackQueryHandler(admin_write_user_list, pattern="^admin_write_user$"))
+        telegram_app.add_handler(CallbackQueryHandler(admin_start_reply, pattern=r"^admin_reply_to_\d+_\d+$"))
         
         # Обработка сообщений
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
