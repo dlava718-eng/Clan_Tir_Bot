@@ -1,17 +1,16 @@
 import os
 import sys
 import sqlite3
-import threading
 import asyncio
+import requests
 from datetime import datetime
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8882364637:AAHUWNZilUdxotSOXg44owGgCsuozHGlT48")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 5611887050))
-COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", 7))
 DATABASE_FILE = "/data/applications.db"
 
 if not BOT_TOKEN:
@@ -31,6 +30,9 @@ ASK_DESCRIPTION, ASK_LEVEL, ASK_NAME, ASK_SKILLS, ASK_TIMEZONE, ASK_AGE = range(
 # Хранилища временных данных
 user_data_temp = {}
 admin_reply_temp = {}
+
+# Глобальная переменная для приложения Telegram
+telegram_app = None
 
 # Flask приложение
 flask_app = Flask(__name__)
@@ -164,6 +166,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message=
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data_temp.pop(user_id, None)
+    admin_reply_temp.pop(user_id, None)
     await main_menu(update, context)
 
 # ========== ИНФОРМАЦИОННЫЕ КНОПКИ ==========
@@ -178,7 +181,7 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⚡ **Наш путь** ⚡
 Мы прошли через огонь и воду, через сотни битв и тысячи побед. Tir — это не название, это клеймо на сердце каждого из нас.
 
-🎯 **Наша принципы** 🎯
+🎯 **Наша философия** 🎯
 — Сила в единстве
 — Честь выше победы
 — Дисциплина ведёт к величию
@@ -191,7 +194,7 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Поддержку 24/7 в любых начинаниях
 
 🔥 **Наши достижения** 🔥
-Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 50 совместных рейдов
+Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 500 совместных побед
 
 *Стань частью истории. Стань частью TIR!* 🐉
 """
@@ -211,7 +214,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 • Наставничество над академией
 • Более высокие требования к уровню и навыкам
 
-📚 **ACADEMIA — НОВОБРАНЦЫ** 📚
+📚 **ACADEMIA — КУЗНИЦА КАДРОВ** 📚
 • Подготовка новых игроков к основному составу
 • Обучение механикам и тактикам
 • Помощь в развитии и прокачке
@@ -683,74 +686,112 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_menu")]]
     await update.message.reply_text("Вернуться в меню?", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ========== FLASK ==========
+# ========== НАСТРОЙКА WEBHOOK ==========
+def setup_webhook():
+    """Настраивает webhook для бота"""
+    # Получаем URL сервера от Render
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    
+    if not webhook_url:
+        # Для локальной разработки используем ngrok или localhost
+        print("⚠️ RENDER_EXTERNAL_URL не задан, использую localhost для тестов")
+        webhook_url = "https://your-bot.onrender.com"  # Замените на ваш URL
+        return False
+    
+    webhook_path = f"{webhook_url}/webhook"
+    
+    # Устанавливаем webhook
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+    response = requests.post(url, json={"url": webhook_path})
+    
+    if response.status_code == 200 and response.json().get("ok"):
+        print(f"✅ Webhook успешно установлен: {webhook_path}")
+        return True
+    else:
+        print(f"❌ Ошибка установки webhook: {response.text}")
+        return False
+
+# ========== WEBHOOK ОБРАБОТЧИК ==========
+@flask_app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Обработчик входящих обновлений от Telegram"""
+    global telegram_app
+    
+    if telegram_app is None:
+        return 'Bot not ready', 500
+    
+    try:
+        # Получаем update от Telegram
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        
+        # Обрабатываем update асинхронно
+        await telegram_app.process_update(update)
+        
+        return 'OK', 200
+    except Exception as e:
+        print(f"❌ Ошибка в webhook: {e}")
+        return 'Error', 500
+
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
-    return {"status": "ok"}, 200
+    return jsonify({"status": "ok", "bot": "running"}), 200
+
+# ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
+async def init_bot():
+    """Инициализирует приложение бота"""
+    global telegram_app
+    
+    print("🚀 Инициализация бота...")
+    init_database()
+    
+    telegram_app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Регистрируем все обработчики
+    # Команды
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("myapp", my_application))
+    telegram_app.add_handler(CommandHandler("cancel", cancel_command))
+    
+    # Главное меню
+    telegram_app.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
+    telegram_app.add_handler(CallbackQueryHandler(join_academia_callback, pattern="^join_academia$"))
+    telegram_app.add_handler(CallbackQueryHandler(about_us_callback, pattern="^about_us$"))
+    telegram_app.add_handler(CallbackQueryHandler(difference_callback, pattern="^difference$"))
+    telegram_app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
+    telegram_app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+    
+    # Админ-панель
+    telegram_app.add_handler(CallbackQueryHandler(admin_view_applications, pattern="^admin_view_(all|pending|accepted|rejected)$"))
+    telegram_app.add_handler(CallbackQueryHandler(admin_navigate, pattern="^admin_(next|prev)$"))
+    telegram_app.add_handler(CallbackQueryHandler(admin_handle_action, pattern=r"^admin_(accept|reject|delete)_\d+$"))
+    
+    # Отправка сообщений
+    telegram_app.add_handler(CallbackQueryHandler(admin_write_user_list, pattern="^admin_write_user$"))
+    telegram_app.add_handler(CallbackQueryHandler(admin_start_reply, pattern=r"^admin_reply_to_\d+_\d+$"))
+    
+    # Обработка текстовых сообщений
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Инициализируем приложение
+    await telegram_app.initialize()
+    
+    print("✅ Бот инициализирован и готов к работе!")
+    print(f"👑 Администратор: {ADMIN_ID}")
 
 def run_flask():
+    """Запускает Flask сервер"""
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-# ========== ЗАПУСК БОТА ==========
-def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    async def start_bot():
-        print("🚀 Запуск бота...")
-        init_database()
-        
-        telegram_app = Application.builder().token(BOT_TOKEN).build()
-        
-        # Команды
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("myapp", my_application))
-        telegram_app.add_handler(CommandHandler("cancel", cancel_command))
-        
-        # Главное меню
-        telegram_app.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
-        telegram_app.add_handler(CallbackQueryHandler(join_academia_callback, pattern="^join_academia$"))
-        telegram_app.add_handler(CallbackQueryHandler(about_us_callback, pattern="^about_us$"))
-        telegram_app.add_handler(CallbackQueryHandler(difference_callback, pattern="^difference$"))
-        telegram_app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
-        telegram_app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
-        
-        # Админ-панель (просмотр списков)
-        telegram_app.add_handler(CallbackQueryHandler(admin_view_applications, pattern="^admin_view_(all|pending|accepted|rejected)$"))
-        
-        # Навигация
-        telegram_app.add_handler(CallbackQueryHandler(admin_navigate, pattern="^admin_(next|prev)$"))
-        
-        # Действия с заявками
-        telegram_app.add_handler(CallbackQueryHandler(admin_handle_action, pattern=r"^admin_(accept|reject|delete)_\d+$"))
-        
-        # Отправка сообщений пользователям
-        telegram_app.add_handler(CallbackQueryHandler(admin_write_user_list, pattern="^admin_write_user$"))
-        telegram_app.add_handler(CallbackQueryHandler(admin_start_reply, pattern=r"^admin_reply_to_\d+_\d+$"))
-        
-        # Обработка сообщений
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        print(f"✅ Бот запущен! Админ: {ADMIN_ID}")
-        
-        await telegram_app.initialize()
-        await telegram_app.start()
-        await telegram_app.updater.start_polling()
-        
-        while True:
-            await asyncio.sleep(1)
-    
-    try:
-        loop.run_until_complete(start_bot())
-    except KeyboardInterrupt:
-        print("🛑 Остановка бота...")
-    finally:
-        loop.close()
-
+# ========== ОСНОВНОЙ ЗАПУСК ==========
 if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print("✅ Flask запущен")
-    run_bot()
+    # Инициализируем бота
+    asyncio.run(init_bot())
+    
+    # Настраиваем webhook
+    setup_webhook()
+    
+    # Запускаем Flask сервер
+    print(f"✅ Flask сервер запущен на порту {os.environ.get('PORT', 10000)}")
+    run_flask()
