@@ -353,12 +353,12 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     about_text = """
 🏰 **О клане Tir** 🏰
 
-*Мы не просто клан — мы братство воинов, объединённых одной целью: стать легендой\!*
+*Мы не просто клан — мы братство воинов, объединённых одной целью: стать легендой!*
 
 ⚡ **Наш путь** ⚡
 Мы прошли через огонь и воду, через сотни битв и тысячи побед. Tir — это не название, это клеймо на сердце каждого из нас.
 
-🎯 **Наша философия** 🎯
+🎯 **Наша принципы** 🎯
 — Сила в единстве
 — Честь выше победы
 — Дисциплина ведёт к величию
@@ -371,9 +371,9 @@ async def about_us_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Поддержку 24/7 в любых начинаниях
 
 🔥 **Наши достижения** 🔥
-Топ\-10 кланов по PvP | 3\-кратные победители клановых турниров | Более 500 совместных побед
+Топ-10 кланов по PvP | 3-кратные победители клановых турниров | Более 50 совместных рейдов
 
-*Стань частью истории. Стань частью TIR\!* 🐉
+*Стань частью истории. Стань частью TIR!* 🐉
 """
     keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -403,7 +403,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 ---
 
-📚 **ACADEMIA — КУЗНИЦА КАДРОВ** 📚
+📚 **ACADEMIA — НОВОБРАНЦЫ** 📚
 
 *Школа будущих чемпионов*
 
@@ -424,7 +424,7 @@ async def difference_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 🎯 **Путь развития:** Academia → Обучение → Повышение навыков → Вступление в Tir
 
-*Вместе мы создаём идеальную клановую экосистему\!* 💪
+*Вместе мы создаём идеальную клановую экосистему!* 💪
 """
     keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -448,7 +448,7 @@ async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text(
-                f"⏰ *Вы не можете подать заявку так часто\!*\n\n"
+                f"⏰ *Вы не можете подать заявку так часто!*\n\n"
                 f"Ваша предыдущая заявка ещё рассматривается или была отклонена.\n\n"
                 f"📅 *Следующую заявку можно подать через {days_left} дн.*\n\n"
                 f"Чтобы узнать статус заявки, отправьте команду /myapp",
@@ -466,7 +466,7 @@ async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         await query.edit_message_text(
-            "⚔️ *Ты выбрал клан Tir\!* ⚔️\n\n"
+            "⚔️ *Ты выбрал клан Tir!* ⚔️\n\n"
             "Это путь сильнейших. Расскажи о себе подробнее.\n\n"
             "📝 *Напиши ОПИСАНИЕ о себе:*\n"
             "(Кратко расскажи, кто ты, чем занимаешься в игре, какой у тебя опыт)",
@@ -490,7 +490,7 @@ async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text(
-                f"⏰ *Вы не можете подать заявку так часто\!*\n\n"
+                f"⏰ *Вы не можете подать заявку так часто!*\n\n"
                 f"Ваша предыдущая заявка ещё рассматривается или была отклонена.\n\n"
                 f"📅 *Следующую заявку можно подать через {days_left} дн.*\n\n"
                 f"Чтобы узнать статус заявки, отправьте команду /myapp",
@@ -508,7 +508,7 @@ async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     try:
         await query.edit_message_text(
-            "📚 *Ты выбрал Academia\!* 📚\n\n"
+            "📚 *Ты выбрал Academia!* 📚\n\n"
             "Это старт твоего пути к величию. Расскажи о себе.\n\n"
             "📝 *Напиши ОПИСАНИЕ о себе:*\n"
             "(Кто ты, какой у тебя опыт, чего хочешь достичь)",
@@ -584,7 +584,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await update.message.reply_text(
-                f"✅ *Заявка #{app_id} отправлена\!*\n\n"
+                f"✅ *Заявка #{app_id} отправлена!*\n\n"
                 "Ожидайте ответа лидера или зама.\n"
                 "Спасибо, что выбрали наш клан! 🙌\n\n"
                 "Статус заявки можно проверить командой /myapp",
@@ -610,7 +610,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             await update.message.reply_text(
-                f"✅ *Сообщение отправлено\!*\n\n"
+                f"✅ *Сообщение отправлено!*\n\n"
                 f"Пользователь: @{escape_markdown(username)}\n"
                 f"ID заявки: #{app_id}",
                 parse_mode="Markdown"
@@ -635,7 +635,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text(
-                "⛔ *Доступ запрещён\!*\n\nЭта панель доступна только лидерам и замам клана Tir.",
+                "⛔ *Доступ запрещён!*\n\nЭта панель доступна только лидерам и замам клана Tir.",
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
