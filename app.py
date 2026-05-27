@@ -1,9 +1,10 @@
 import os
 import sys
 import sqlite3
+import threading
 import asyncio
+import signal
 from datetime import datetime
-from threading import Thread
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -11,23 +12,35 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8882364637:AAHUWNZilUdxotSOXg44owGgCsuozHGlT48")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 5611887050))
-COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", 7))
-DATABASE_FILE = "/tmp/applications.db"
+DATABASE_FILE = "/data/applications.db"
 
-if not BOT_TOKEN or not ADMIN_ID:
-    print("❌ ОШИБКА: BOT_TOKEN или ADMIN_ID не заданы!")
+# Проверка переменных
+if not BOT_TOKEN:
+    print("❌ ОШИБКА: BOT_TOKEN не задан!")
     sys.exit(1)
+
+if not ADMIN_ID:
+    print("❌ ОШИБКА: ADMIN_ID не задан!")
+    sys.exit(1)
+
+print(f"✅ Токен: {BOT_TOKEN[:10]}...")
+print(f"✅ ADMIN_ID: {ADMIN_ID}")
 
 # Состояния анкеты
 ASK_DESCRIPTION, ASK_LEVEL, ASK_NAME, ASK_SKILLS, ASK_TIMEZONE, ASK_AGE = range(6)
 
+# Хранилище временных данных
 user_data_temp = {}
-admin_reply_temp = {}
 
+# Flask приложение
 flask_app = Flask(__name__)
+
+# Глобальная переменная для приложения бота
+telegram_app = None
 
 # ========== БАЗА ДАННЫХ ==========
 def init_database():
+    os.makedirs(os.path.dirname(DATABASE_FILE), exist_ok=True)
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -48,7 +61,7 @@ def init_database():
     ''')
     conn.commit()
     conn.close()
-    print("✅ База данных готова")
+    print(f"✅ База данных: {DATABASE_FILE}")
 
 def save_application(user_id, username, clan_choice, answers):
     conn = sqlite3.connect(DATABASE_FILE)
@@ -57,22 +70,23 @@ def save_application(user_id, username, clan_choice, answers):
         INSERT INTO applications 
         (user_id, username, clan_choice, description, level, ingame_name, skills, timezone, age, timestamp, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, clan_choice,
-          answers['описание'], answers['уровень'], answers['имя'],
-          answers['навыки'], answers['часовой пояс'], answers['возраст'],
-          datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'pending'))
+    ''', (
+        user_id, username, clan_choice,
+        answers['описание'], answers['уровень'], answers['имя'],
+        answers['навыки'], answers['часовой пояс'], answers['возраст'],
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'pending'
+    ))
     app_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return app_id
 
-def load_applications():
+def get_all_applications():
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM applications ORDER BY id DESC')
     rows = cursor.fetchall()
     conn.close()
-    
     apps = []
     for row in rows:
         apps.append({
@@ -102,10 +116,10 @@ def get_application_by_id(app_id):
         }
     return None
 
-def update_status(app_id, status):
+def update_status(app_id, new_status):
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('UPDATE applications SET status = ? WHERE id = ?', (status, app_id))
+    cursor.execute('UPDATE applications SET status = ? WHERE id = ?', (new_status, app_id))
     conn.commit()
     conn.close()
 
@@ -115,16 +129,6 @@ def delete_app(app_id):
     cursor.execute('DELETE FROM applications WHERE id = ?', (app_id,))
     conn.commit()
     conn.close()
-
-def get_stats():
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM applications')
-    total = cursor.fetchone()[0]
-    cursor.execute('SELECT COUNT(*) FROM applications WHERE status = "pending"')
-    pending = cursor.fetchone()[0]
-    conn.close()
-    return total, pending
 
 # ========== ОБРАБОТЧИКИ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,14 +145,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def join_tir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def join_tir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     user_data_temp[user_id] = {"clan": "Tir", "step": ASK_DESCRIPTION}
     await query.edit_message_text("⚔️ Клан Tir\n\n📝 Напишите ОПИСАНИЕ о себе:")
 
-async def join_academia_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def join_academia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -223,7 +227,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
@@ -231,16 +235,14 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("⛔ Доступ запрещён!")
         return
     
-    total, pending = get_stats()
-    apps = load_applications()
-    
+    apps = get_all_applications()
     if not apps:
-        await query.edit_message_text("Нет заявок.")
+        await query.edit_message_text("📭 Нет заявок.")
         return
     
-    # Показываем первую заявку
     app = apps[0]
     text = f"""📋 ЗАЯВКА #{app['id']}
+
 👤 @{app['username']}
 🏰 {app['clan_choice']}
 📅 {app['timestamp']}
@@ -268,22 +270,21 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.from_user.id != ADMIN_ID:
         return
     
-    data = query.data
-    action, app_id = data.split("_")
+    action, app_id = query.data.split("_")
     app_id = int(app_id)
     app = get_application_by_id(app_id)
     
     if not app:
-        await query.edit_message_text("Заявка не найдена!")
+        await query.edit_message_text("❌ Заявка не найдена!")
         return
     
     if action == "accept":
         update_status(app_id, "accepted")
-        await context.bot.send_message(chat_id=app["user_id"], text=f"✅ Ваша заявка принята!")
+        await context.bot.send_message(chat_id=app["user_id"], text="✅ Ваша заявка ПРИНЯТА!")
         await query.edit_message_text(f"✅ Заявка #{app_id} принята!")
     elif action == "reject":
         update_status(app_id, "rejected")
-        await context.bot.send_message(chat_id=app["user_id"], text=f"❌ Ваша заявка отклонена.")
+        await context.bot.send_message(chat_id=app["user_id"], text="❌ Ваша заявка ОТКЛОНЕНА")
         await query.edit_message_text(f"❌ Заявка #{app_id} отклонена!")
     elif action == "delete":
         delete_app(app_id)
@@ -314,30 +315,53 @@ def health():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ========== ЗАПУСК ==========
-async def main():
-    print("🚀 Запуск бота...")
-    init_database()
+def run_bot():
+    """Запускает бота в отдельном потоке с собственным event loop"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    async def start_bot():
+        global telegram_app
+        
+        print("🚀 Запуск бота...")
+        init_database()
+        
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
+        
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CallbackQueryHandler(join_tir, pattern="^join_tir$"))
+        telegram_app.add_handler(CallbackQueryHandler(join_academia, pattern="^join_academia$"))
+        telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+        telegram_app.add_handler(CallbackQueryHandler(handle_action, pattern="^(accept|reject|delete)_"))
+        telegram_app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        print(f"✅ Бот запущен! Админ: {ADMIN_ID}")
+        
+        # Запускаем polling
+        await telegram_app.initialize()
+        await telegram_app.start()
+        await telegram_app.updater.start_polling()
+        
+        # Держим бота запущенным
+        while True:
+            await asyncio.sleep(1)
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(join_tir_callback, pattern="^join_tir$"))
-    app.add_handler(CallbackQueryHandler(join_academia_callback, pattern="^join_academia$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel$"))
-    app.add_handler(CallbackQueryHandler(handle_action, pattern="^(accept|reject|delete)_"))
-    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print(f"✅ Бот запущен! Админ: {ADMIN_ID}")
-    
-    await app.run_polling()
+    try:
+        loop.run_until_complete(start_bot())
+    except KeyboardInterrupt:
+        print("🛑 Остановка бота...")
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
-    # Запускаем Flask в фоне
-    Thread(target=run_flask, daemon=True).start()
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("✅ Flask запущен")
     
-    # Запускаем бота
-    asyncio.run(main())
+    # Запускаем бота в основном потоке
+    run_bot()
