@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8882364637:AAHUWNZilUdxotSOXg44owGgCsuozHGlT48")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 123456789))
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 5611887050))
 COOLDOWN_DAYS = int(os.environ.get("COOLDOWN_DAYS", 7))
 DATABASE_FILE = "applications.db"
 
