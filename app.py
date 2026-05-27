@@ -396,15 +396,24 @@ async def my_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(message, parse_mode="Markdown")
 
-# ========== АДМИН-ПАНЕЛЬ ==========
+# ========== АДМИН-ПАНЕЛЬ (С КНОПКОЙ НАЗАД ДЛЯ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ) ==========
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.from_user.id != ADMIN_ID:
-        await query.edit_message_text("⛔ Доступ запрещён!")
+    user_id = query.from_user.id
+    
+    # Проверка на админа
+    if user_id != ADMIN_ID:
+        keyboard = [[InlineKeyboardButton("◀️ Вернуться в меню", callback_data="back_to_menu")]]
+        await query.edit_message_text(
+            "⛔ *Доступ запрещён!*\n\nЭта панель доступна только лидерам и замам клана Tir.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return
     
+    # Админ видит панель управления
     total, pending, accepted, rejected, tir, academia = get_statistics()
     
     admin_text = f"""
